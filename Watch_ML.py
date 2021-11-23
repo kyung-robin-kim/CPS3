@@ -165,6 +165,10 @@ for sz in feature_sets.keys():
     target=data['Activity']
 
     #Do grid search cv on the data, for each model in models
+    for model,param in zip(models.keys(),params.keys()):
+        cv_params = GridSearchCV(models[model], params[param], scoring(scoring.keys()))
+        cv_params.fit(X,y)
+        cv_params.best_params_
 
 
 
