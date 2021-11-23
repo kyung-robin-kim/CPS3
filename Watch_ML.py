@@ -121,8 +121,8 @@ def get_featureset(v_files,nv_files,window_size=1,window_advance=1,
 
 window_sizes=[1,2,3,4]
 feature_sets={}
-labels={0:"non-vibrato",1:"vibrato"}
-#labels=None
+# labels={0:"non-vibrato",1:"vibrato"}
+labels=None
 if read_cache==True: #read in previously processed features
     feature_files=os.listdir(path_to_processed)
     for f in feature_files:
@@ -135,13 +135,7 @@ else: #Process raw data into features
 
 ## Applying ML Algorithms
 
-
-#https://github.com/fracpete/sklearn-weka-plugin
-#import sklweka.jvm as jvm
-#from sklweka.dataset import load_arff, to_nominal_labels
-#from sklweka.classifiers import WekaEstimator
-#from sklweka.clusters import WekaCluster
-#from sklweka.preprocessing import WekaTransformer
+#Switched from WEKA to sklearn
 
 import sklearn.model_selection as ms
 import sklearn.metrics as mt
@@ -150,158 +144,54 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
 from sklearn.model_selection import GridSearchCV
 
-scoring={"F1":mt.f1_score,"Precision":mt.precision_score,"Recall":mt.recall_score,"Accuracy":mt.accuracy_score}
-models={"Decision Tree":DecisionTreeClassifier,"Random Forest":RandomForestClassifier, "Support Vector Classifier":SVC,"Ada Boost Classifier":AdaBoostClassifier}
-params={"Decision Tree":{'max_depth':[1,2,3,4,5]},"Random Forest":{'max_depth':[1,2,3,4,5]}, "Support Vector Classifier":{'C': [1, 10], 'kernel': ('linear', 'rbf')},"Ada Boost Classifier":{'n_estimators':[25,50,75,100]}}
-#jvm.start(packages=True)
+#List of scorers to calculate: Currently only using F1
+scorers={"F1":mt.make_scorer(mt.f1_score),"Precision": mt.make_scorer(mt.precision_score),"Recall": mt.make_scorer(mt.recall_score),"Accuracy": mt.make_scorer(mt.accuracy_score)}
 
+#Types of model to try
+models={"Decision Tree":DecisionTreeClassifier(),"Random Forest":RandomForestClassifier(), "Support Vector Classifier":SVC(),"Ada Boost Classifier":AdaBoostClassifier()}
+#Hyperparameter space to explore for each model
+params={"Decision Tree":{'max_depth':[1,2,3,4,5]},"Random Forest":{'max_depth':[1,2,3,4,5]}, "Support Vector Classifier":{'C': [1, 10,100], 'kernel': ('linear', 'rbf')},"Ada Boost Classifier":{'n_estimators':[25,50,75,100]}}
+
+#Find best models of each type, for features from each window size
+overall_best_models={}
 for sz in feature_sets.keys():
     print("Training on Features with Window Length %s"%sz)
     data=feature_sets[sz]
-    features=data['mean_x','mean_y','mean_z',
+    features=data[['mean_x','mean_y','mean_z',
                     'std_x','std_y','std_z',
                     'med_x','med_y','med_z',
-                    'rms_x','rms_y','rms_z']
+                    'rms_x','rms_y','rms_z']]
     target=data['Activity']
+    best_models={}
+    for model in models:
+        est=models[model]
+        param_dict=params[model]
+        gsearch = GridSearchCV(est, param_dict, scoring = scorers, refit='F1')
+        gsearch.fit(features,target)
+        best_models[model]=gsearch
+    overall_best_models[sz]=best_models
 
-    #Do grid search cv on the data, for each model in models
-    for model,param in zip(models.keys(),params.keys()):
-        cv_params = GridSearchCV(models[model], params[param], scoring(scoring.keys()))
-        cv_params.fit(X,y)
-        cv_params.best_params_
+#Save results for plotting; print out hyper params of each top model
+df_best_models=pd.DataFrame(columns=models.keys(),index=feature_sets.keys())
+for sz in feature_sets.keys():
+    print("\n")
+    for model in models.keys():
+        gsresult=overall_best_models[sz][model]
+        df_best_models[model].loc[sz]=gsresult.best_score_
+        print("Window Size: %s | Model: %s"%(sz,model))
+        print("Best F1 Score: %0.4f"%gsresult.best_score_)
+        print("Using Hyper Parameters: %s\n"%gsresult.best_params_)
 
-
-
-'''
-###PART 1: 1sec window, adv 1sec, original features
-print("\nPart 1: Original Scheme With More Data")
-j48 = WekaEstimator(classname="weka.classifiers.trees.J48",options=["-C","0.25","-M", "2"])
-p1_data=feature_sets[1]
-p1_X=p1_data[['mean_x','std_x','mean_y','std_y','mean_z','std_z']]
-p1_y=p1_data['Activity']
-p1_accuracy=cross_val_score(j48,p1_X, p1_y, cv=10, scoring='accuracy')
-print("1 second window accuracy= %f"%p1_accuracy.mean())
-
-##PART 2: 2,3,4 sec windows with original features
-print("\nPart 2: Varying Window Length")
-windows=[2,3,4]
-p2_dict={1:p1_accuracy}
-for window in windows:
-    data=feature_sets[window]
-    X=data[['mean_x','std_x','mean_y','std_y','mean_z','std_z']]
-    y=data['Activity']
-    accuracy=cross_val_score(j48,X, y, cv=10, scoring='accuracy')
-    p2_dict[window]=accuracy
-print("1 second window accuracy= %f"%p2_dict[1].mean())
-print("2 second window accuracy= %f"%p2_dict[2].mean())
-print("3 second window accuracy= %f"%p2_dict[3].mean())
-print("4 second window accuracy= %f"%p2_dict[4].mean())
-
-Get best window/accuracy:
-all_vals=list(p2_dict.values())
-mean_vals=[np.mean(a) for a in all_vals]
-best_acc=max(mean_vals)
-inv_dict=dict(zip(mean_vals,p2_dict.keys()))
-best_window=inv_dict[best_acc]
-
-best_score=0
-best_window=0
-for key in p2_dict.keys():
-    score=p2_dict[key].mean()
-    if score>best_score:
-        best_score=score
-        best_window=key
+#Plotting
+df_best_models.plot(marker='o')
+plt.grid()
+plt.xticks([1,2,3,4])
+plt.xlabel('Window Size (s)')
+plt.ylabel('F1 Score')
+plt.title('F1 Score vs Feature Window Length For Best Models from Grid Search')
+plt.show()
 
 
-##Part 3: 1,2,3,4 sec windows with full features
-print("\nPart 3: Added Feature Set")
-windows=[1,2,3,4]
-p3_dict={}
-for window in windows:
-    data=feature_sets[window]
-    X=data[['mean_x','mean_y','mean_z',
-            'std_x','std_y','std_z',
-            'med_x','med_y','med_z',
-            'rms_x','rms_y','rms_z']]
-    y=data['Activity']
-    accuracy=cross_val_score(j48,X, y, cv=10, scoring='accuracy')
-    p3_dict[window]=accuracy
-print("1 second window accuracy= %f"%p3_dict[1].mean())
-print("2 second window accuracy= %f"%p3_dict[2].mean())
-print("3 second window accuracy= %f"%p3_dict[3].mean())
-print("4 second window accuracy= %f"%p3_dict[4].mean())
-
-## Part 4: sequential feature selection
-print("\nPart 4: Sequential Feature Selection (Decision Tree)")
 
 
-def get_best_feature(mlmodel,data,feature_lists,target='Activity'):
-    For a given set of lists of features, choose the list with the highest accuracy
-    best_score=0
-    best_fl=None
-    y=data[target]
-    for feature_list in feature_lists:
-        X=data[feature_list]
-        accuracy=cross_val_score(mlmodel,X, y, cv=10, scoring='accuracy').mean()
-        if accuracy>best_score:
-            best_score=accuracy
-            best_fl=feature_list
-    return (best_fl, best_score)
 
-
-def sequential_feature_selector(mlmodel,data,fundamental_features,
-                                target='Activity',delta_score_thresh=1):
-    find the best feature list, breaking if only a 1% gain is made
-    ff=fundamental_features.copy()
-    feature_lists=fundamental_features.copy()
-    n_features=len(feature_lists)
-    ranked_features=[]
-    i=0
-    delta_score=100
-    prev_score=1e-6
-
-    feature_log={}
-    while i<len(feature_lists):
-        print("finding the %d best features"%(i+1))
-        best=get_best_feature(mlmodel,data,feature_lists)
-        best_feature_list=best[0]
-        next_best_feature=best_feature_list[-1]
-        ff.remove([next_best_feature])
-        best_score=best[1]
-        delta_score=(best_score-prev_score)/prev_score*100
-        if delta_score<delta_score_thresh:
-            break
-        prev_score=best_score
-        feature_lists.remove(best_feature_list)
-        feature_lists=[best_feature_list+i for i in ff]
-        feature_log[i+1]=(best_feature_list,best_score)
-        i+=1
-    return feature_log
-
-
-fundamental_features=[[i] for i in['mean_x','mean_y','mean_z',
-                'std_x','std_y','std_z',
-                'med_x','med_y','med_z',
-                'rms_x','rms_y','rms_z']]
-print("J48")
-DT_sfs=sequential_feature_selector(j48,feature_sets[best_window],fundamental_features)
-print ("\nJ48 Sequential Feature Selection")
-for key in DT_sfs:
-    print("%d Best Features: "%key,DT_sfs[key])
-
-## Part 5: SFS with Random Forest and SVM
-print("\nPart 5: SFS with Random Forest and SVM")
-print("SVM")
-smo=WekaEstimator(classname="weka.classifiers.functions.SMO")
-SMO_sfs=sequential_feature_selector(smo,feature_sets[best_window],fundamental_features)
-print ("\nSMO (SVC) Sequential Feature Selection")
-for key in SMO_sfs:
-    print("%d Best Features: "%key,SMO_sfs[key])
-
-print("\n\nRF")
-rf=WekaEstimator(classname="weka.classifiers.trees.RandomForest",options=["-I","10"])
-RF_sfs=sequential_feature_selector(rf,feature_sets[best_window],fundamental_features)
-print ("\nRandom Forest Sequential Feature Selection")
-for key in RF_sfs:
-    print("%d Best Features: "%key,RF_sfs[key])
-'''
